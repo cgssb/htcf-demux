@@ -4,7 +4,7 @@ import argparse
 import datetime
 import os
 import threading
-import chunker
+from htcfdemux import chunker
 from mpi4py import MPI
 
 comm = MPI.COMM_WORLD
