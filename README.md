@@ -17,6 +17,6 @@ Create an sbatch like so:
 module load mpich
 module load htcf-demux
   
-mpiexec htcf-demux -o output_dir -b barcodes my.fastq
+mpiexec htcf-demux -o output_dir -b barcodes.txt myseq.fastq
 ```
 

@@ -204,10 +204,10 @@ class Worker(object):
    #         summary.write(itemline)
 
 def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument('-o', '--outdir', default='out')
-    p.add_argument('-b', '--bcfile', default='barcodes.txt')
-    p.add_argument('seqfile')
+    p = argparse.ArgumentParser(prog='mpiexec htcf-demux')
+    p.add_argument('-o', '--outdir', default='out', help='default "out"')
+    p.add_argument('-b', '--bcfile', default='barcodes.txt', help='default "barcodes.txt"')
+    p.add_argument('seqfile', help='fastq file')
     return p.parse_args()
 
 if __name__ == '__main__':
