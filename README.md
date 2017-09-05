@@ -8,13 +8,15 @@ Create an sbatch like so:
 ```bash
 #!/bin/bash
 
-#SBATCH --mem=1000M
+# This will request a minimum of 10 and max of 40 processors
 #SBATCH -n 40
-#SBATCH --tasks-per-node=1
+
+# This may speed up the job but increase your wait time.
+#SBATCH --tasks-per-node=1  
  
 module load mpich
 module load htcf-demux
   
-mpiexec single.py my.fastq barcodes.txt output_dir
+mpiexec htcf-demux -o output_dir -b barcodes my.fastq
 ```
 

@@ -5,6 +5,6 @@ setup(
     version='0.1',
     packages=['htcfdemux',],
     license='MIT',
-    scripts=('htcfdemux/single.py',),
+    scripts=('htcfdemux/htcf-demux',),
     #long_description=open('README.txt').read(),
 )

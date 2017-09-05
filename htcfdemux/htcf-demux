@@ -205,9 +205,9 @@ class Worker(object):
 
 def parse_args():
     p = argparse.ArgumentParser()
+    p.add_argument('-o', '--outdir', default='out')
+    p.add_argument('-b', '--bcfile', default='barcodes.txt')
     p.add_argument('seqfile')
-    p.add_argument('bcfile')
-    p.add_argument('outdir')
     return p.parse_args()
 
 if __name__ == '__main__':
