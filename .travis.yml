@@ -1,0 +1,15 @@
+language: python
+
+python:
+  - "3.5"
+
+before_install:
+  - sudo apt-get -qq update
+  - sudo apt-get install -y mpich
+
+install:
+  - pip install -r requirements.txt
+  - python setup.py install
+
+script:
+  - htcf-demux
