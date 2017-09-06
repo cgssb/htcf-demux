@@ -12,4 +12,4 @@ install:
   - python3 setup.py install
 
 script:
-  - htcf-demux
+  - htcf-demux -h
