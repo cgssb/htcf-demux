@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 
 import argparse
+import logging
 import math
 import os
+import re
 import sys
 
 #class Chunk(object):
@@ -29,13 +31,30 @@ import sys
 
 class Chunker(object):
     """
-    """
-    BUFSIZE = 1024*1024
+    Chunker:  Provide (offset, length) of file chunks of roughly <chunksize> split on <search> boundaries.
 
-    def __init__(self, fname, chunksize=1024*1024*200, searchlen=512, search='@', debug=False):
+    >>> record = r'^@.*\n.*\n\+\n.*$'
+    >>> c = Chunker(myfile, chunksize=1024*1024*200, search=record)
+    >>> print(c.num_chunks)
+    >>> 
+    >>> for i in range(c.num_chunks):
+    >>>     c.get_chunk(i)
+    >>> 
+    >>> for (offset, length) in c.chunks():
+    >>>     # do something
+    >>> 
+    """
+
+    BUFSIZE = 1024*1024
+    CHUNKSIZE = 1024*1024*200
+
+    def __init__(self, fname, chunksize=None, searchlen=1024*100, search='>', debug=False):
+        if chunksize is None:
+            self._csize = self.CHUNKSIZE
+        else:
+            self._csize = chunksize
         self.fsize = os.stat(fname).st_size
-        self._csize = chunksize
-        self._searchlen = searchlen
+        self._searchlen = searchlen # maxsize 
         self._search = search
         self._debug = debug
         assert(self._csize > self._searchlen)
@@ -43,10 +62,24 @@ class Chunker(object):
 
     @property
     def num_chunks(self):
-        i = math.ceil(self.fsize / self._csize) - 1  # i might be the last index
-        if self._get_start(i) is None:              # nope, it's just a small piece of the previous chunk
-            i -= 1
-        return i + 1
+        if not getattr(self, '_num_chunks', None):
+            i = int(math.ceil(self.fsize / self._csize) - 1)  # i might be the last index
+            if self._get_start(i) is None:              # nope, it's just a small piece of the previous chunk
+                i -= 1
+            # Sanity Check
+            for x in range(i):
+                try:
+                    self._get_start(x)
+                except:
+                    raise Exception("Could not find 'start' in chunk %d (offset %d)" % (x,i))
+
+            self._num_chunks = i + 1 
+
+        return self._num_chunks
+
+    def chunks(self):
+        for i in range(self.num_chunks):
+            yield self.get_chunk(i)
 
     def get_chunk(self, index):
         start = self._get_start(index)
@@ -55,12 +88,17 @@ class Chunker(object):
         return (start, stop-start)
 
     def _get_start(self, index):
+        """find the start boundary for chunk"""
         start = index * self._csize
         if start >= self.fsize: return None  # This is off the end of the file.
         self._f.seek(start)
         s = self._f.read(self._searchlen)
-        i = s.find(self._search)
-        if i == -1: 
+        match = re.search(self._search, s, re.MULTILINE)
+        if match:
+            i = match.span()[0]
+        else:
+        #i = s.find(self._search)
+        #if i == -1: 
             if start+len(s) == self.fsize:  # No start, our search has gotten us to the end of the file.
                 return None
             else:
@@ -86,18 +124,25 @@ class Chunker(object):
             if left == 0:
                 break
 
+class FastqChunker(Chunker):
+    def __init__(self, *args, **kwargs):
+        super(FastqChunker, self).__init__(*args, **kwargs)
+        self._search = r'^@.*\n.*\n\+\n.*$'
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('fastq')
     p.add_argument('-r', '--read_chunk', type=int)
-    p.add_argument('-c', '--chunk_size', default=1000000000, type=int)
+    p.add_argument('-c', '--chunk_size', default=None, type=int)
+    #p.add_argument('-s', '--search_len', default=None, type=int)
     p.add_argument('-d', '--debug', action="store_true")
     args = p.parse_args()
-    c = Chunker(args.fastq, args.chunk_size, debug=args.debug)
+    c = FastqChunker(args.fastq, args.chunk_size, debug=args.debug)
     if args.read_chunk:
         c.read_chunk(args.read_chunk-1)
     else:
-        print(c.num_chunks)
+        for x in c.chunks():
+            print(x)
 
 if __name__ == '__main__':
     parse_args()

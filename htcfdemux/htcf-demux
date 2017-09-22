@@ -16,23 +16,27 @@ TAG_RESPONSE = 3
 TAG_DONE = 4
 
 class Handler(threading.Thread):
-    def __init__(self, file1, bcfile, outdir):
+    def __init__(self, seqfiles, bcfile, outdir):
         threading.Thread.__init__(self)
-        self.file1 = file1
         self.bcfile = bcfile
         self.outdir = outdir
+        self.seqfiles = seqfiles
+        self.outfiles = {}
 
-    def prep(self):
         if not os.path.isdir(self.outdir):
             os.mkdir(self.outdir)
-        self.barcodes = {}
-        for name,bc in [l.strip().split() for l in open(self.bcfile)]:
-            fname1 = os.path.join(self.outdir, name+'.fastq')
-            open(fname1, 'w') # create and ensure empty files
-            self.barcodes[bc] = {'name': name, 'pos': 0, 'filename': fname1 }
 
-        self.chunker = chunker.Chunker(self.file1, chunksize=1024*1024*500)
-        self.chunklist = [self.chunker.get_chunk(id) for id in range(self.chunker.num_chunks)]
+        for name,bc in [l.strip().split() for l in open(self.bcfile)]:
+            for i,sf in enumerate(self.seqfiles):
+                if len(self.seqfiles) == 1:
+                    fname = os.path.join(self.outdir, "%s.fastq" % (name))
+                else:
+                    fname = os.path.join(self.outdir, "%s_R%d.fastq" % (name, i+1))
+
+                open(fname, 'w') # create and ensure empty files
+                self.outfiles[(bc,i)] = {'name': name, 'pos': 0, 'filename': fname }
+
+        self.chunklist = list(chunker.FastqChunker(self.seqfiles[0], chunksize=1024*1024*50).chunks())
 
     def run(self):
         while 1:
@@ -42,38 +46,54 @@ class Handler(threading.Thread):
             if s.tag == TAG_DONE:
                 break
             elif s.tag == TAG_INIT:
-                send_data = {'file1': self.file1, 'barcodes': self.barcodes}
+                send_data = {'seqfiles': self.seqfiles, 'outfiles': self.outfiles}
             elif s.tag == TAG_CHUNK:
                 if len(self.chunklist) > 0:
                     send_data = self.chunklist.pop(0)
                 else:
                     send_data = None
             elif s.tag == TAG_WRITE:
-                bc_key = data['bc_key']
-                send_data = self.barcodes[bc_key]['pos']
-                self.barcodes[bc_key]['pos'] += data['size']
+                key = data['bc_key']
+                send_data = self.outfiles[key]['pos']
+                self.outfiles[key]['pos'] += data['size']
+            else:
+                raise Exception("Unknown TAG received.")
     
             comm.send(send_data, s.source, tag=TAG_RESPONSE)
 
 class Worker(object):
-    def __init__(self, comm):
+    def __init__(self, comm, debug=False):
         self.comm = comm
-        self.logfile = open('rank%d.log' % comm.rank, 'w')
+        self.debug = debug
+        if self.debug:
+            self.logfile = open('rank%d.log' % comm.rank, 'w')
 
     def log(self, msg):
-        self.logfile.write('%s %s\n' % (datetime.datetime.now(), msg))
-        self.logfile.flush()
+        if self.debug:
+            self.logfile.write('%s %s\n' % (datetime.datetime.now(), msg))
+            self.logfile.flush()
 
     def prep(self):
         data = self.comm.sendrecv(None, 0, sendtag=TAG_INIT, recvtag=TAG_RESPONSE)
-        self.f1 = open(data['file1'], 'rb')
-        self.barcodes = data['barcodes']
-        for key,attrs in self.barcodes.items():
+        self.seqfiles = data['seqfiles']
+        self.outfiles = data['outfiles']
+        have_multiple_seqs = len(self.seqfiles) > 1
+        self.files = []
+
+        for sf in self.seqfiles:
+            self.files.append(open(sf, 'rb'))
+
+        for key,attrs in self.outfiles.items():
             attrs['file'] = open(attrs['filename'], 'r+b')
 
+
     def cleanup(self):
-        for b, attrs in self.barcodes.items():
-            self.write_seq(b, force=True)
+        for key, attrs in self.outfiles.items():
+            self.write_seq(key, force=True)
+            #if len(self.files) > 1:
+                #for i in range(len(self.files)):
+            #else:
+                #self.write_seq(b, force=True)
             attrs['file'].close()
 
     def start(self):
@@ -84,29 +104,31 @@ class Worker(object):
             self.log("got chunk %s" % (str(chunk)))
             if chunk is None: break
             self.log("starting chunk %s" % (str(chunk)))
-            self.process_chunk(chunk)
+            for i, f in enumerate(self.files):
+                self.process_chunk(chunk, i)
             self.log("ending chunk %s" % (str(chunk)))
         self.cleanup()
 
 
     def write_seq(self, key, seq=None, force=False):
-        bc_attrs = self.barcodes[key]
-        if not bc_attrs.get('buffer', None):
-            bc_attrs['buffer'] = bytearray()
-        buf = bc_attrs['buffer']
+        attrs = self.outfiles[key]
+        if not attrs.get('buffer', None):
+            attrs['buffer'] = bytearray()
+        buf = attrs['buffer']
         if seq:
             buf.extend(b"%s" % seq)
         length = len(buf)
         if (not force) and length < 1024*1024*10:
             return
         pos =  self.comm.sendrecv({'bc_key': key, 'size': length} , 0, sendtag=TAG_WRITE, recvtag=TAG_RESPONSE)
-        bc_attrs['file'].seek(pos)
-        bc_attrs['file'].write(buf)
-        bc_attrs['buffer'] = None
+        attrs['file'].seek(pos)
+        attrs['file'].write(buf)
+        attrs['buffer'] = None
 
-    def process_chunk(self,chunk):
+    def process_chunk(self, chunk, files_index, index=None):
         offset,length = chunk
-        self.f1.seek(offset)
+        fobj = self.files[files_index]
+        fobj.seek(offset)
     
         nonmatching_headers_count = 0    
         total_reads = 0
@@ -123,61 +145,74 @@ class Worker(object):
         #return
         pos = 0
     
-        for line in self.f1:
-            pos += len(line)
-            if pos > length:
-                break
-            # If it's a header line
-            if line.startswith(b'@'):
-                total_reads += 1
-                
-                read = self.f1.readline()
-                pos += len(read)
+        while pos < (length - 1):
+            header = fobj.readline()
+            read = fobj.readline()
+            delimiter = fobj.readline()
+            qual = fobj.readline()
 
-                # Get the barcodes from the sequences (assumes 8 bp)
-                read_bc = read[0:8].decode('utf-8')
-                
-                #Skip the '+' line in the fastq
-                delim = self.f1.readline()
-                pos += len(delim)
-                
-                # Read the qual lines
-                read_qual = self.f1.readline()
-                pos += len(read_qual)
-                
-                
-                key = (read_bc)
-                # Check that the barcode was in the barcode file.
-                if key in self.barcodes:
-                #     Increment the counts for that barcode
-                #    bc_forthisread = bcseq_hash[read1_bc]
-                #    bc_readcounts[bc_forthisread] += 1
-                #    
-                #    # Print these to the appropriate files (if those files exist).
-                #    bc_id = bcseq_hash[read1_bc]
-                #    
-                #    bc_r1_outpath = outpath + '/' + bc_id + '_r1.fastq'
-                #    bc_r2_outpath = outpath + '/' + bc_id + '_r2.fastq'
-                #    
-                         
-                     self.write_seq(key, b"%s%s+\n%s" % (line, read, read_qual))
-                #    if os.path.exists(bc_r1_outpath):
-                #        tempout = filebuffers[bc_r1_outpath]
-                #        tempout.write(r1_line)
-                #        tempout.write(read1)
-                #        tempout.write('+\n')
-                #        tempout.write(read1_qual)
-                #    
-                #        
-                #    if os.path.exists(bc_r2_outpath):
-                #        tempout2 = filebuffers[bc_r2_outpath]
-                #        tempout2.write(r2_line)
-                #        tempout2.write(read2)
-                #        tempout2.write('+\n')
-                #        tempout2.write(read2_qual)
-                
-        #percent_matched = (float(matching_bcs)/float(total_reads))*100
-        #percent_mismatched = (float(mismatched_bcs)/float(total_reads))*100
+            pos += sum(map(len, (header, read, delimiter, qual)))
+
+            key = (read[0:8].decode('utf-8'), files_index)
+
+            if key in self.outfiles:
+                self.write_seq(key, b"%s%s%s%s" % (header, read, delimiter, qual))
+
+#        for line in self.f1:
+#            pos += len(line)
+#            if pos > length:
+#                break
+#            # If it's a header line
+#            if line.startswith(b'@'):
+#                total_reads += 1
+#                
+#                read = self.f1.readline()
+#                pos += len(read)
+#
+#                # Get the barcodes from the sequences (assumes 8 bp)
+#                read_bc = read[0:8].decode('utf-8')
+#                
+#                #Skip the '+' line in the fastq
+#                delim = self.f1.readline()
+#                pos += len(delim)
+#                
+#                # Read the qual lines
+#                read_qual = self.f1.readline()
+#                pos += len(read_qual)
+#                
+#                
+#                key = (read_bc)
+#                # Check that the barcode was in the barcode file.
+#                if key in self.barcodes:
+#                #     Increment the counts for that barcode
+#                #    bc_forthisread = bcseq_hash[read1_bc]
+#                #    bc_readcounts[bc_forthisread] += 1
+#                #    
+#                #    # Print these to the appropriate files (if those files exist).
+#                #    bc_id = bcseq_hash[read1_bc]
+#                #    
+#                #    bc_r1_outpath = outpath + '/' + bc_id + '_r1.fastq'
+#                #    bc_r2_outpath = outpath + '/' + bc_id + '_r2.fastq'
+#                #    
+#                         
+#                     self.write_seq(key, b"%s%s+\n%s" % (line, read, read_qual))
+#                #    if os.path.exists(bc_r1_outpath):
+#                #        tempout = filebuffers[bc_r1_outpath]
+#                #        tempout.write(r1_line)
+#                #        tempout.write(read1)
+#                #        tempout.write('+\n')
+#                #        tempout.write(read1_qual)
+#                #    
+#                #        
+#                #    if os.path.exists(bc_r2_outpath):
+#                #        tempout2 = filebuffers[bc_r2_outpath]
+#                #        tempout2.write(r2_line)
+#                #        tempout2.write(read2)
+#                #        tempout2.write('+\n')
+#                #        tempout2.write(read2_qual)
+#                
+#        #percent_matched = (float(matching_bcs)/float(total_reads))*100
+#        #percent_mismatched = (float(mismatched_bcs)/float(total_reads))*100
         #percent_nonmatchingheaders = (float(nonmatching_headers_count)/float(total_reads))*100
    # 
    #     # Print out the summary statistics
@@ -207,17 +242,17 @@ def parse_args():
     p = argparse.ArgumentParser(prog='mpiexec htcf-demux')
     p.add_argument('-o', '--outdir', default='out', help='default "out"')
     p.add_argument('-b', '--bcfile', default='barcodes.txt', help='default "barcodes.txt"')
-    p.add_argument('seqfile', help='fastq file')
+    p.add_argument('-d', '--debug', action="store_true")
+    p.add_argument('seqfiles', nargs='+', help='fastq file(s)')
     return p.parse_args()
 
 if __name__ == '__main__':
     
-    w = Worker(comm)
+    args = parse_args()
+    w = Worker(comm, debug=args.debug)
     w.log("Started worker")
     if comm.rank == 0:
-        args = parse_args()
-        handler = Handler(args.seqfile, args.bcfile, args.outdir)
-        handler.prep()
+        handler = Handler(seqfiles=args.seqfiles, bcfile=args.bcfile, outdir=args.outdir)
         handler.start()
 
     comm.Barrier()
