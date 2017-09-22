@@ -1,0 +1,22 @@
+language: python
+
+python:
+  - "3.5"
+
+before_install:
+  - sudo apt-get -qq update
+  - sudo apt-get install -y mpich
+
+install:
+  - pip3 install -r requirements.txt
+  - python3 setup.py install
+
+script:
+  - mpiexec -n 4 -hosts n1,n2,n3,n4 htcf-demux -b tests/barcodes.txt tests/test.fa
+
+addons:
+  hosts: 
+    - n1
+    - n2
+    - n3
+    - n4
