@@ -1,4 +1,4 @@
-[![Build Status](https://travis-ci.org/cgssb/htcf-demux.svg?branch=master)](https://travis-ci.org/cgssb/htcf-demux)
+[![Build Status](https://travis-ci.org/htcf/htcf-demux.svg?branch=master)](https://travis-ci.org/htcf/htcf-demux)
 
 # htcf-demux
 MPI Demultiplexer 
